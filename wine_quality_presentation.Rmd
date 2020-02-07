@@ -1,0 +1,298 @@
+---
+title: 'Wine quality'
+author: "Yoann Boget, Florian Hochstrasser"
+date: 29 May 2018
+output:
+    revealjs::revealjs_presentation:
+        width: 1920
+        height: 1080
+        controls: no
+        center: no
+        theme: simple
+        highlight: tango
+        transition: convex
+        fig_width: 8
+        fig_aspect: 0.618
+        fig_caption: yes
+        css: styles.css
+        keep_markdown: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      fig.align='center',
+                      knitr.table.format = "html")
+
+inline_hook <- function (x) {
+  if (is.numeric(x)) {
+    # ifelse does a vectorized comparison
+    # If integer, print without decimal; otherwise print two places
+    res <- ifelse(x == round(x),
+      sprintf("%d", x),
+      sprintf("%.4f", x)
+    )
+    paste(res, collapse = ", ")
+  }
+}
+knitr::knit_hooks$set(inline = inline_hook,
+                      webgl = rgl::hook_webgl)
+```
+
+```{r prepdata, include=FALSE, echo=FALSE}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(data.table)
+
+# For 3d pca
+library(rgl)
+library(htmltools)
+setupKnitr()
+
+source("_RUN_THIS.R")
+
+# This is needed to compile the presentation:
+
+# Installing reveal.js presentation package / other github packages:
+# 1. install.packages("devtools")
+# 2. devtools::install_github("rstudio/revealjs")
+# 3. devtools::install_github("haozhu233/kableExtra")
+
+```
+
+# Introduction
+
+## Scope
+
+### Goal
+
+Find the method that performs best in predicting a wine of good quality
+
+**i.e. the one that has the best negative predicted value**
+
+### Approach
+
+Compare GLM, decision trees, neural networks and random forests
+
+# Exploratory Data Analysis
+
+## Data structure
+
+- `r nrow(wine.trans)` observations
+- Explanatory
+    - 11 variables, all continuous
+    - Describe physiochemical properties
+    - Value ranges: 1e-1 to 1e2
+
+- Response: Categorical variable quality, coded 1 ... 7
+    - Recoded into two levels: 1 ... 6: poor, &ge; 7: good
+
+## Response
+- Very unbalanced
+
+```{r response_boxplots}
+response_boxplot
+```
+
+## Explanatory Variables
+
+- Important: volatile.acidity, sulphates, alcohol
+
+```{r explanatory_boxplots}
+explanatory_boxplot
+```
+
+## Correlations
+
+- acidity / pH (quite obvious)
+- free / total sulfur dioxide (also, unsurprising)
+- density &harr; sugar / acidity / alcohol %rarr; reasonable (molecule weights)
+
+```{r correlations}
+correlations_plot
+```
+
+## PCA
+
+```{r pca, webgl=T, rgl.margin=0}
+pcargl
+```
+
+
+
+# Approaches
+
+## Sample
+
+- The same training / test data was used for all methods studied
+- Drawn with `caret::createDataPartition`
+    - 70% of data for training, 30% for testing
+    
+```{r sampleDistrib, echo=T}
+table(wine.training$qual)
+table(wine.test$qual)
+```
+
+## GLM
+
+
+```{r summaryglm}
+summary(rega)
+```
+
+## GLM Comparison
+
+<div class="twocol"><div class="col">
+With cutoff at 0.5, accuracy: `r conf.mat.glm1$overall[1]`
+
+```{r crossTabReg1, results="asis", echo=F}
+kable(conf.mat.glm1$table, booktabs=T)
+```
+
+</div><div clas="col">
+With cutoff at 0.7, accuracy: `r conf.mat.glm2$overall[1]`
+
+```{r crossTabReg2, results="asis", echo=F}
+kable(conf.mat.glm2$table, booktabs=T)
+```
+
+</div><div clas="col">
+With cutoff at 0.1, accuracy: `r conf.mat.glm3$overall[1]`
+
+```{r crossTabReg3, results="asis", echo=F}
+kable(conf.mat.glm3$table, booktabs=T)
+```
+</div></div>
+
+
+## Decision tree
+
+```{r detreecaret,eval=F,echo=T}
+cp.dectree <- 0.00002
+form <- as.formula(qual~.)
+
+control <- trainControl(method = "repeatedcv",
+                        number = 10,
+                        repeats = 10,
+                        classProbs=TRUE,
+                        sampling="up")
+
+set.seed(seed)
+dectree.caret <- train(form,
+                       data=wine.training,
+                       cp = cp.dectree,
+                       method="rpart",
+                       trControl=control)
+```
+
+Important variables were:
+
+````{r importantdectree, results="asis"}
+kable(dectree.important.vars, booktabs=T) %>% kable_styling( full_width = F)
+```
+
+
+## Pruned decision tree
+
+- A size 3 tree was chosen by caret as the best fit.
+
+```{r prunedtree}
+showPrunedDecisionTree()
+```
+
+
+## Neural network
+
+```{r neuralnetplot}
+plotnet(nnetFit,  circle_col= "#277F8EFF", pos_col="#FDE725FF", neg_col= "#440154FF",  alpha.val=0.7, cex=0.6)
+```
+
+## Random forest - training settings
+
+- Fitted using `caret::train` again
+
+```{r randforsettings, eval=F,echo=T}
+wine.rf.caret <- caret::train(qual~.,
+                         data=wine.training,
+                         method="rf",
+                         trace=T,
+                         ntree = 1000,
+                         #tuneGrid = data.frame(mtry = 3),
+                         trControl=trainControl(
+                             method="cv",
+                             number=10,
+                             sampling = "up"))
+```
+
+## Random forest - results
+
+<div class="twoCol"><div class="col">
+
+After training with 1000 trees, reduced to 600 because error stabilized there
+
+```{r randforresults}
+
+oobData = as.data.frame(wine.rf.caret$finalModel$err.rate)
+
+# Define trees as 1:ntree
+oobData$trees <- seq(1:nrow(oobData))
+
+# Cast to long format
+oobData2 = melt(oobData, id.vars = "trees")
+setnames(oobData2, "value", "error")
+
+# Plot using ggplot
+ggplot(data = oobData2, aes(x = trees, y = error, color = variable)) + geom_line() + scale_color_viridis_d()
+
+```
+
+</div><div class="col">
+The fitted forest is very good at predicting good wines, with an error rate of 0.0.
+
+```{r ranforconf}
+kable(wine.rf.caret$finalModel$confusion) %>% kable_styling(full_width = F)
+```
+
+This was not the case for the test set:
+```{r ranforconftest}
+kable(confusionMatrix(wine.rf.predict,wine.test$qual)$table) %>% kable_styling(full_width = F)
+```
+</div></div>
+
+
+# Conclusions
+
+## Result comparison
+
+- Neg. Pred. Value: That's what we want to maximize. When we predict a wine as good, we want it to be good.
+
+```{r methodcomparison, results='markup'}
+
+htmltools::includeCSS("https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css")
+
+glm1 <- c(negpredval.glm1,accuracy.glm1,sensitivity.glm1,specificity.glm1)
+glm2 <- c(negpredval.glm2,accuracy.glm2,sensitivity.glm2,specificity.glm2)
+glm3 <- c(negpredval.glm3,accuracy.glm3,sensitivity.glm3,specificity.glm3)
+dectree <- c(negpredval.dectree, accuracy.dectree, sensitivity.dectree,specificity.dectree)
+randfor <- c(negpredval.rf,accuracy.rf,sensitivity.rf,specificity.rf)
+nnet <- c(negpredval.nnet,accuracy.nnet,sensitivity.nnet,specificity.nnet)
+
+
+
+methodcomparisondf <- data.frame(cbind(glm1,glm2, glm3,dectree,randfor,nnet))
+colnames(methodcomparisondf) <- c("GLM","GLM cutoff 0.7","GLM cutoff 0.1", "Decisison Tree", "Random Forest", "Neural Network")
+
+kable(methodcomparisondf, digits = 3) %>%
+    kable_styling(bootstrap_options = c("hover", "condensed", "responsive"),
+                  full_width = F)
+```
+
+## Observations / next steps
+
+- Oversampling lead to perfect separation for the random forest, but failed to predict the test data accurately (overfitting problem).
+
+- With more time, caret could be used more efficiently
+    - Set the negative predicted value as the criterium for model selection
